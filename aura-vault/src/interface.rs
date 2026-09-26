@@ -41,11 +41,12 @@ pub trait AuraVaultTrait {
     ///   tokens are deposited into and withdrawn from the vault.
     /// - `signers` — Ordered list of addresses authorised to create and vote
     ///   on governance proposals. Must be non-empty.
+    /// - `decimals` — Vault share decimal precision (e.g. 7 for Stellar standard). Set at initialization and immutable thereafter.
     ///
     /// # Errors
     ///
     /// - [`VaultError::AlreadyInitialized`] — vault has already been initialised.
-    fn initialize(env: Env, admin: Address, underlying_token: Address, signers: Vec<Address>) -> Result<(), VaultError>;
+    fn initialize(env: Env, admin: Address, underlying_token: Address, signers: Vec<Address>, decimals: u32) -> Result<(), VaultError>;
 
     /// Deposit underlying tokens and receive proportional vault shares.
     ///
@@ -309,6 +310,31 @@ pub trait AuraVaultTrait {
     /// Return the timestamp of the last successful harvest.
     fn last_harvest_time(env: Env) -> u64;
 
+    // -----------------------------------------------------------------------
+    // Circuit breaker — share-price movement limit (Issue #371)
+    // -----------------------------------------------------------------------
+
+    /// Set the maximum allowed share-price movement per harvest, in basis points.
+    ///
+    /// Admin-only. `0` disables the check. When a harvest would move the share
+    /// price by more than `bps` basis points (up **or** down), the vault
+    /// auto-pauses and emits a `suspicious` / `price_movement` event.
+    /// The admin must call [`unpause`] after reviewing.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    ///
+    /// [`unpause`]: AuraVaultTrait::unpause
+    fn set_price_movement_limit(env: Env, admin: Address, bps: u32) -> Result<(), VaultError>;
+
+    /// Read the current share-price movement limit in basis points.
+    ///
+    /// Returns `0` when the circuit breaker is disabled.
+    /// Read-only; no authorization required.
+    fn get_price_movement_limit(env: Env) -> u32;
+
     /// Returns the total underlying tokens currently tracked by the vault
     /// (`total_deposited`), in the underlying token's smallest unit.
     ///
@@ -455,4 +481,70 @@ pub trait AuraVaultTrait {
     /// - `env` — Soroban execution environment.
     /// - `proposal_id` — ID of the proposal to query.
     fn proposal_status(env: Env, proposal_id: u64) -> Option<String>;
+
+    /// Return the human-readable English message for a given [`VaultError`]
+    /// code, or `None` if the code does not correspond to a known variant.
+    ///
+    /// This is a pure view function included in the contract ABI so that
+    /// wallet and explorer UIs can query error descriptions on-chain without
+    /// bundling a separate message table. The returned string matches the
+    /// value of [`VaultError::message`] for the corresponding variant.
+    ///
+    /// Read-only; no authorization required.
+    ///
+    /// # Parameters
+    ///
+    /// - `env` — Soroban execution environment.
+    /// - `code` — The numeric discriminant of a [`VaultError`] variant
+    ///   (e.g. `11` for [`VaultError::VaultPaused`]).
+    ///
+    /// # Returns
+    ///
+    /// `Some(message)` for a recognised code, `None` otherwise.
+    fn get_vault_error_message(env: Env, code: u32) -> Option<String>;
+
+    // -----------------------------------------------------------------------
+    // Whitelist-only deposit mode (Issue #349)
+    // -----------------------------------------------------------------------
+
+    /// Enable whitelist-only deposit mode. Admin-only.
+    fn enable_whitelist(env: Env, admin: Address) -> Result<(), VaultError>;
+
+    /// Disable whitelist-only deposit mode. Admin-only.
+    fn disable_whitelist(env: Env, admin: Address) -> Result<(), VaultError>;
+
+    /// Add an address to the deposit whitelist. Admin-only.
+    fn add_to_whitelist(env: Env, admin: Address, addr: Address) -> Result<(), VaultError>;
+
+    /// Remove an address from the deposit whitelist. Admin-only.
+    fn remove_from_whitelist(env: Env, admin: Address, addr: Address) -> Result<(), VaultError>;
+
+    /// Query whether an address is whitelisted. Read-only, no auth required.
+    fn is_whitelisted(env: Env, addr: Address) -> bool;
+
+    // -----------------------------------------------------------------------
+    // Minimum deposit amount (Issue #355)
+    // -----------------------------------------------------------------------
+
+    /// Set the minimum deposit amount. Admin-only.
+    fn set_min_deposit(env: Env, admin: Address, amount: i128) -> Result<(), VaultError>;
+
+    /// Query the minimum deposit amount. Read-only, no auth required.
+    fn min_deposit(env: Env) -> i128;
+
+    // -----------------------------------------------------------------------
+    // Contract metadata (Issue #350)
+    // -----------------------------------------------------------------------
+
+    /// Returns the vault name. Read-only.
+    fn name(env: Env) -> Option<String>;
+
+    /// Returns the vault share symbol. Read-only.
+    fn symbol(env: Env) -> Option<String>;
+
+    /// Returns the contract version integer. Read-only.
+    fn version(env: Env) -> u32;
+
+    /// Returns the number of decimal places used by vault shares (e.g. 7 for Stellar standard). Read-only.
+    fn decimals(env: Env) -> u32;
 }

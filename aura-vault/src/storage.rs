@@ -1,4 +1,5 @@
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{contracttype, Address, Env, Vec};
+use crate::errors::VaultError;
 
 #[contracttype]
 pub enum DataKey {
@@ -49,7 +50,56 @@ pub enum DataKey {
     WithdrawalNextId,
     /// Individual withdrawal queue entry keyed by queue ID.
     WithdrawalEntry(u64),
+    // -----------------------------------------------------------------------
+    // Circuit breaker — share-price movement limit (Issue #371)
+    // -----------------------------------------------------------------------
+    /// Maximum allowed share-price movement per harvest, in basis points.
+    /// 0 = check disabled. Covers both up and down movements.
+    PriceMovementLimit,
+    // -----------------------------------------------------------------------
+    // Whitelist-only deposit mode (Issue #349)
+    // -----------------------------------------------------------------------
+    /// Whether whitelist-only mode is enabled for deposits.
+    WhitelistEnabled,
+    /// Per-address whitelist status (persistent storage).
+    Whitelist(Address),
+    // -----------------------------------------------------------------------
+    // Minimum deposit amount (Issue #355)
+    // -----------------------------------------------------------------------
+    /// Minimum deposit amount in underlying token units.
+    MinDeposit,
+    // -----------------------------------------------------------------------
+    // Contract metadata (Issue #350, Issue #347)
+    // -----------------------------------------------------------------------
+    /// Vault name (set at initialization).
+    VaultName,
+    /// Vault share symbol (set at initialization).
+    VaultSymbol,
+    /// Contract version integer (set at initialization).
+    VaultVersion,
+    /// Vault share decimals (set at initialization, immutable). Issue #347.
+    Decimals,
+    // -----------------------------------------------------------------------
+    // Reentrancy guard (Issue #345)
+    // -----------------------------------------------------------------------
+    /// Reentrancy guard lock flag.
+    ReentrancyGuard,
+    // ---------------------------------------------------------------------------
+    // Multi-sig admin operations (Issue #375)
+    // ---------------------------------------------------------------------------
+    /// Ordered list of current multi-sig signers
+    MultiSigSigners,
+    /// M (threshold) — number of signatures required to execute an operation
+    MultiSigThreshold,
+    /// Monotonically increasing operation counter
+    MultiSigOpCount,
+    /// Per-signer vote record — prevents double-signing. Tuple: (op_id, signer).
+    MultiSigVote(u64, Address),
 }
+
+pub const ADMIN_ROLE: u32 = 1 << 0;
+pub const KEEPER_ROLE: u32 = 1 << 1;
+pub const GUARDIAN_ROLE: u32 = 1 << 2;
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
 pub const INSTANCE_LIFETIME_THRESHOLD: u32 = DAY_IN_LEDGERS * 7;
@@ -60,6 +110,10 @@ pub const PERSISTENT_BUMP_AMOUNT: u32 = DAY_IN_LEDGERS * 30;
 // ---------------------------------------------------------------------------
 // Instance-storage helpers
 // ---------------------------------------------------------------------------
+
+pub fn is_initialized(env: &Env) -> bool {
+    env.storage().instance().has(&DataKey::UnderlyingToken)
+}
 
 pub fn get_admin(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::Admin)
@@ -390,6 +444,25 @@ pub fn remove_withdrawal_entry(env: &Env, id: u64) {
     env.storage().persistent().remove(&DataKey::WithdrawalEntry(id));
 }
 
+// ---------------------------------------------------------------------------
+// Circuit-breaker helpers (instance storage) — Issue #371
+// ---------------------------------------------------------------------------
+
+/// Maximum allowed share-price movement per harvest, in basis points.
+/// 0 = check disabled.  Applies symmetrically to upward and downward moves.
+pub fn get_price_movement_limit(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::PriceMovementLimit)
+        .unwrap_or(0)
+}
+
+pub fn set_price_movement_limit(env: &Env, bps: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PriceMovementLimit, &bps);
+}
+
 /// A single entry in the withdrawal queue.
 #[soroban_sdk::contracttype]
 #[derive(Clone, Debug)]
@@ -405,3 +478,170 @@ pub struct WithdrawalEntry {
     /// Whether this entry has already been claimed.
     pub claimed: bool,
 }
+
+// ---------------------------------------------------------------------------
+// Whitelist helpers (Issue #349)
+// ---------------------------------------------------------------------------
+
+pub fn get_whitelist_enabled(env: &Env) -> bool {
+    env.storage().instance().get(&DataKey::WhitelistEnabled).unwrap_or(false)
+}
+
+pub fn set_whitelist_enabled(env: &Env, enabled: bool) {
+    env.storage().instance().set(&DataKey::WhitelistEnabled, &enabled);
+}
+
+pub fn is_whitelisted(env: &Env, addr: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Whitelist(addr.clone()))
+        .unwrap_or(false)
+}
+
+pub fn set_whitelisted(env: &Env, addr: &Address, whitelisted: bool) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Whitelist(addr.clone()), &whitelisted);
+    let key = DataKey::Whitelist(addr.clone());
+    env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+}
+
+// ---------------------------------------------------------------------------
+// Minimum deposit helpers (Issue #355)
+// ---------------------------------------------------------------------------
+
+pub fn get_min_deposit(env: &Env) -> i128 {
+    env.storage().instance().get(&DataKey::MinDeposit).unwrap_or(10_000)
+}
+
+pub fn set_min_deposit(env: &Env, amount: i128) {
+    env.storage().instance().set(&DataKey::MinDeposit, &amount);
+}
+
+// ---------------------------------------------------------------------------
+// Contract metadata helpers (Issue #350)
+// ---------------------------------------------------------------------------
+
+pub fn get_vault_name(env: &Env) -> Option<soroban_sdk::String> {
+    env.storage().instance().get(&DataKey::VaultName)
+}
+
+pub fn set_vault_name(env: &Env, name: &soroban_sdk::String) {
+    env.storage().instance().set(&DataKey::VaultName, name);
+}
+
+pub fn get_vault_symbol(env: &Env) -> Option<soroban_sdk::String> {
+    env.storage().instance().get(&DataKey::VaultSymbol)
+}
+
+pub fn set_vault_symbol(env: &Env, symbol: &soroban_sdk::String) {
+    env.storage().instance().set(&DataKey::VaultSymbol, symbol);
+}
+
+pub fn get_vault_version(env: &Env) -> u32 {
+    env.storage().instance().get(&DataKey::VaultVersion).unwrap_or(1u32)
+}
+
+pub fn set_vault_version(env: &Env, version: u32) {
+    env.storage().instance().set(&DataKey::VaultVersion, &version);
+}
+
+// ---------------------------------------------------------------------------
+// Vault share decimals helpers (Issue #347)
+// ---------------------------------------------------------------------------
+
+pub fn get_decimals(env: &Env) -> u32 {
+    env.storage().instance().get(&DataKey::Decimals).unwrap_or(7u32)
+}
+
+pub fn set_decimals(env: &Env, decimals: u32) {
+    env.storage().instance().set(&DataKey::Decimals, &decimals);
+}
+
+// ---------------------------------------------------------------------------
+// Reentrancy guard helpers (Issue #345)
+// ---------------------------------------------------------------------------
+
+pub fn is_reentrancy_locked(env: &Env) -> bool {
+    env.storage().instance().get(&DataKey::ReentrancyGuard).unwrap_or(false)
+}
+
+pub fn set_reentrancy_lock(env: &Env, locked: bool) {
+    env.storage().instance().set(&DataKey::ReentrancyGuard, &locked);
+}
+
+pub fn enter_reentrancy_guard(env: &Env) -> Result<(), VaultError> {
+    if is_reentrancy_locked(env) {
+        return Err(VaultError::Reentrancy);
+    }
+    set_reentrancy_lock(env, true);
+    Ok(())
+}
+
+pub fn exit_reentrancy_guard(env: &Env) {
+    set_reentrancy_lock(env, false);
+}
+
+// ---------------------------------------------------------------------------
+// Multi-sig storage helpers (Issue #375)
+// ---------------------------------------------------------------------------
+
+/// Default threshold is 2-of-N (overridden after signer set grows).
+pub const DEFAULT_THRESHOLD: u32 = 2;
+/// Operations expire 72 hours after proposal.
+pub const MULTISIG_EXPIRY_SECS: u64 = 72 * 60 * 60;
+
+pub fn get_multisig_signers(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::MultiSigSigners)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn set_multisig_signers(env: &Env, signers: &Vec<Address>) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MultiSigSigners, signers);
+}
+
+pub fn get_multisig_threshold(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MultiSigThreshold)
+        .unwrap_or(DEFAULT_THRESHOLD)
+}
+
+pub fn set_multisig_threshold(env: &Env, threshold: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MultiSigThreshold, &threshold);
+}
+
+pub fn get_multisig_op_count(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MultiSigOpCount)
+        .unwrap_or(0)
+}
+
+pub fn set_multisig_op_count(env: &Env, count: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MultiSigOpCount, &count);
+}
+
+pub fn has_multisig_signed(env: &Env, op_id: u64, signer: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get::<DataKey, bool>(&DataKey::MultiSigVote(op_id, signer.clone()))
+        .unwrap_or(false)
+}
+
+pub fn record_multisig_vote(env: &Env, op_id: u64, signer: &Address) {
+    env.storage().instance().set(
+        &DataKey::MultiSigVote(op_id, signer.clone()),
+        &true,
+    );
+}
+
+

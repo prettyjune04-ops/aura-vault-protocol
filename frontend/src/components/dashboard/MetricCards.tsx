@@ -2,6 +2,8 @@
 
 import React from "react";
 import { DashboardCard } from "./DashboardCard";
+import HelpTooltip from "@/components/HelpTooltip";
+import VaultStatSparkline from "./VaultStatSparkline";
 
 /* ─────────────────────────────────────────────
    Shared skeleton / loading placeholder
@@ -31,7 +33,7 @@ export function ApyCard({ apy7d, isLoading }: ApyCardProps) {
     <DashboardCard
       variant="accent"
       title="7-Day APY"
-      subtitle="Annualised yield (rolling 7 days)"
+      subtitle={<span className="inline-flex items-center gap-1">Annualised yield (rolling 7 days)<HelpTooltip helpKey="apy" side="bottom" /></span>}
       data-testid="apy-card"
     >
       {isLoading ? (
@@ -45,6 +47,7 @@ export function ApyCard({ apy7d, isLoading }: ApyCardProps) {
           {display}
         </p>
       )}
+      <VaultStatSparkline metric="apy" label="7-day APY" />
     </DashboardCard>
   );
 }
@@ -123,7 +126,7 @@ export function LastHarvestCard({
     <DashboardCard
       variant="accent"
       title="Last Harvest"
-      subtitle="Most recent keeper harvest"
+      subtitle={<span className="inline-flex items-center gap-1">Most recent keeper harvest<HelpTooltip helpKey="harvest" side="bottom" /></span>}
       data-testid="last-harvest-card"
     >
       {isLoading ? (

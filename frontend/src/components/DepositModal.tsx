@@ -22,11 +22,14 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { AccessibleModal, AmountInput, FormField, FormErrorMessage } from "./AccessibleFormComponents";
+import { UsdAmountConverter } from "./UsdAmountConverter";
+import TransactionProgress from "./TransactionProgress";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type DepositStep = 1 | 2 | 3;
 type TxStatus = "idle" | "pending" | "success" | "error";
+const DEPOSIT_FEE_BUFFER = 0.001;
 
 export interface DepositModalProps {
   isOpen: boolean;
@@ -83,7 +86,7 @@ function Spinner() {
 
 const STEP_LABELS: Record<DepositStep, string> = {
   1: "Amount",
-  2: "Review",
+  2: "Fees",
   3: "Result",
 };
 
@@ -165,6 +168,7 @@ export function DepositModal({
   totalAssets = "0",
   onSuccess,
 }: DepositModalProps) {
+  const { address } = useWalletStore();
   const [step, setStep] = useState<DepositStep>(1);
   const [amount, setAmount] = useState("");
   const [amountError, setAmountError] = useState("");
@@ -174,6 +178,33 @@ export function DepositModal({
   const [txHash, setTxHash] = useState("");
   const [txError, setTxError] = useState("");
   const [newShareBalance, setNewShareBalance] = useState("");
+  const [progressStep, setProgressStep] = useState(2);
+  const [closeWarning, setCloseWarning] = useState(false);
+
+  const requestClose = useCallback(() => {
+    if (txStatus === "pending") {
+      setCloseWarning(true);
+      return;
+    }
+    onClose();
+  }, [onClose, txStatus]);
+
+  // Preserve the success screen during the close animation, then clear the
+  // modal state so reopening always starts with a fresh amount.
+  useEffect(() => {
+    if (isOpen || txStatus !== "success") return;
+    const timer = setTimeout(() => {
+      setStep(1);
+      setAmount("");
+      setAmountError("");
+      setTxStatus("idle");
+      setTxHash("");
+      setTxError("");
+      setNewShareBalance("");
+      setGasEstimate(null);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [isOpen, txStatus]);
 
   // Reset when closed
   useEffect(() => {
@@ -187,6 +218,8 @@ export function DepositModal({
         setTxHash("");
         setTxError("");
         setNewShareBalance("");
+        setProgressStep(2);
+        setCloseWarning(false);
       }, 300);
       return () => clearTimeout(timer);
     }
@@ -236,7 +269,7 @@ export function DepositModal({
   async function handleNext() {
     if (step === 1) {
       if (!validate()) return;
-      await fetchGasEstimate(amount);
+      // Step 2 is now PreSignBreakdown which fetches its own fee data (#885)
       setStep(2);
     } else if (step === 2) {
       await handleSubmit();
@@ -246,6 +279,8 @@ export function DepositModal({
   async function handleSubmit() {
     setTxStatus("pending");
     setTxError("");
+    setProgressStep(2);
+    setCloseWarning(false);
     setStep(3);
     try {
       const res = await fetch("/api/vault/deposit", {
@@ -255,10 +290,14 @@ export function DepositModal({
       });
       const data = await res.json() as { hash?: string; error?: string; newShareBalance?: string };
       if (!res.ok) throw new Error(data.error ?? "Deposit failed");
+      setProgressStep(3);
       setTxHash(data.hash ?? `tx-${Date.now()}`);
       const newBalance = data.newShareBalance ?? estimatedShares;
       setNewShareBalance(newBalance);
+      setProgressStep(4);
       setTxStatus("success");
+      // Invalidate portfolio SWR cache so the panel refreshes automatically (#886)
+      if (address) invalidatePortfolioCache(address);
       onSuccess?.(newBalance);
     } catch (err: unknown) {
       setTxError(err instanceof Error ? err.message : "Deposit failed");
@@ -268,14 +307,14 @@ export function DepositModal({
 
   const titleMap: Record<DepositStep, string> = {
     1: "Deposit",
-    2: "Review Deposit",
+    2: "Fee Breakdown",
     3: txStatus === "success" ? "Deposit Successful" : txStatus === "error" ? "Deposit Failed" : "Processing…",
   };
 
   return (
     <AccessibleModal
       isOpen={isOpen}
-      onClose={onClose}
+      onClose={requestClose}
       title={titleMap[step]}
       description={
         step === 1
@@ -286,7 +325,7 @@ export function DepositModal({
       {/* Accessible live region — announces step transitions */}
       <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
         {step === 1 && "Step 1 of 3: Enter deposit amount."}
-        {step === 2 && "Step 2 of 3: Review your deposit details."}
+        {step === 2 && "Step 2 of 3: Review fee breakdown before signing."}
         {step === 3 && txStatus === "pending" && "Processing your deposit…"}
         {step === 3 && txStatus === "success" && "Deposit successful!"}
         {step === 3 && txStatus === "error" && `Deposit failed: ${txError}`}
@@ -327,6 +366,14 @@ export function DepositModal({
             )}
           </FormField>
 
+          <button type="button" onClick={() => {
+            const max = Math.max(0, Number.parseFloat(balance) - DEPOSIT_FEE_BUFFER);
+            setAmount(Number.isFinite(max) ? max.toFixed(2) : "0.00");
+            setAmountError("");
+          }} className="-mt-3 self-end rounded-md border border-indigo-300 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950" aria-label="Use maximum deposit amount after reserving the 0.001 fee buffer">
+            Max
+          </button>
+
           {/* Quick-select percentage buttons */}
           <div className="flex gap-2">
             {[25, 50, 75, 100].map((pct) => (
@@ -366,6 +413,8 @@ export function DepositModal({
             </div>
           )}
 
+          <UsdAmountConverter tokenAmount={amount} shareAmount={estimatedShares} />
+
           <button
             type="button"
             onClick={() => void handleNext()}
@@ -377,67 +426,23 @@ export function DepositModal({
         </div>
       )}
 
-      {/* ── Step 2: Review ───────────────────────────────────────────────── */}
+      {/* ── Step 2: Fee Breakdown (#885) ────────────────────────────────── */}
       {step === 2 && (
-        <div className="flex flex-col gap-5">
-          {/* Summary table */}
-          <dl className="rounded-lg border border-zinc-200 dark:border-zinc-700 divide-y divide-zinc-100 dark:divide-zinc-800">
-            {[
-              { label: "You deposit", value: `${amount} USDC` },
-              { label: "Estimated shares", value: `${estimatedShares} aUSDC` },
-            ].map(({ label, value }) => (
-              <div key={label} className="flex justify-between px-4 py-3 text-sm">
-                <dt className="text-zinc-500 dark:text-zinc-400">{label}</dt>
-                <dd className="font-mono font-semibold text-zinc-900 dark:text-zinc-50">{value}</dd>
-              </div>
-            ))}
-          </dl>
-
-          {/* Gas estimate */}
-          <div className="rounded-lg bg-zinc-50 dark:bg-zinc-800 px-4 py-3 space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400 mb-1">
-              Estimated Gas Fee
-            </p>
-            {gasLoading ? (
-              <div className="flex items-center gap-2 text-sm text-zinc-400">
-                <Spinner />
-                Fetching estimate…
-              </div>
-            ) : gasEstimate ? (
-              <>
-                <GasEstimateRow label="Base fee" value={gasEstimate.baseFee} />
-                <GasEstimateRow label="Priority fee" value={gasEstimate.priorityFee} />
-                <div className="border-t border-zinc-200 dark:border-zinc-700 pt-2 mt-1">
-                  <GasEstimateRow label="Total" value={gasEstimate.totalGas} />
-                </div>
-              </>
-            ) : null}
-          </div>
-
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => setStep(1)}
-              className="flex-1 rounded-lg border border-zinc-300 dark:border-zinc-600 text-zinc-700 dark:text-zinc-300 font-semibold py-2.5 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-600"
-            >
-              Back
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleNext()}
-              disabled={gasLoading}
-              data-cy="deposit-confirm-btn"
-              className="flex-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-2.5 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:ring-offset-2"
-            >
-              Confirm & Sign
-            </button>
-          </div>
-        </div>
+        <PreSignBreakdown
+          type="deposit"
+          amount={amount}
+          onCancel={() => setStep(1)}
+          onProceed={() => { void handleSubmit(); }}
+        />
       )}
 
       {/* ── Step 3: Result ───────────────────────────────────────────────── */}
       {step === 3 && (
         <div className="flex flex-col items-center gap-5 py-4 text-center" data-cy="deposit-result">
+          <div className="w-full text-left">
+            <TransactionProgress status={txStatus === "idle" ? "pending" : txStatus} currentStep={progressStep} onRetry={() => void handleSubmit()} />
+            {closeWarning && <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">Your transaction is still processing. Keep this window open until it finishes.</p>}
+          </div>
           {txStatus === "pending" && (
             <>
               <div className="flex h-16 w-16 items-center justify-center rounded-full bg-indigo-50 dark:bg-indigo-950">

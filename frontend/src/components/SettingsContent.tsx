@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useTranslation } from "react-i18next";
+import { useTranslations } from "next-intl";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import "@/lib/i18n";
+import { useWidgetLayout } from "@/lib/useWidgetLayout";
+import { AppearanceSettings } from "@/components/AppearanceSettings";
 
 interface Settings {
   slippageTolerance: number;
@@ -41,14 +42,54 @@ function saveSettings(settings: Settings) {
 }
 
 export default function SettingsContent() {
-  const { t } = useTranslation();
+  const t = useTranslations();
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [saved, setSaved] = useState(false);
   const [showDeactivate, setShowDeactivate] = useState(false);
+  const [walletAddress, setWalletAddress] = useState("");
+  const [walletNickname, setWalletNickname] = useState("");
+  const [nicknameStatus, setNicknameStatus] = useState("");
+  const { widgets, setVisible } = useWidgetLayout();
 
   useEffect(() => {
     setSettings(loadSettings());
+    try {
+      const wallet = JSON.parse(localStorage.getItem("aura_wallet_state") ?? "null");
+      if (wallet?.connected && typeof wallet.address === "string") {
+        setWalletAddress(wallet.address);
+        const token = localStorage.getItem("aura_access_token");
+        if (token) {
+          void fetch(`${process.env.NEXT_PUBLIC_API_URL ?? ""}/api/users/preferences`, { headers: { Authorization: `Bearer ${token}` } })
+            .then((response) => response.ok ? response.json() : null)
+            .then((payload) => {
+              const preferences = payload?.preferences ?? payload?.data?.preferences;
+              const alias = preferences?.addressAliases?.[wallet.address];
+              if (typeof alias === "string") setWalletNickname(alias);
+            }).catch(() => undefined);
+        }
+      }
+    } catch { /* Wallet may not be connected. */ }
   }, []);
+
+  async function saveWalletNickname() {
+    const token = localStorage.getItem("aura_access_token");
+    if (!walletAddress || !token) {
+      setNicknameStatus("Connect and authenticate a wallet to save this nickname.");
+      return;
+    }
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? ""}/api/users/preferences`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ addressAliases: { [walletAddress]: walletNickname.trim() || null } }),
+      });
+      if (!response.ok) throw new Error("save failed");
+      setNicknameStatus("Nickname saved to your account.");
+      window.dispatchEvent(new CustomEvent("wallet-alias-updated", { detail: { address: walletAddress, alias: walletNickname.trim() || null } }));
+    } catch {
+      setNicknameStatus("Unable to save nickname. Please try again.");
+    }
+  }
 
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) => {
     const next = { ...settings, [key]: value };
@@ -79,6 +120,25 @@ export default function SettingsContent() {
               {t("settings.appearance.description")}
             </p>
             <ThemeToggle />
+            <AppearanceSettings />
+          </div>
+        </section>
+
+        <section className="mb-8" aria-labelledby="dashboard-display-title">
+          <h2 id="dashboard-display-title" className="text-lg font-medium mb-3">Dashboard display</h2>
+          <div className="space-y-3 rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-900">
+            {widgets.map((widget) => (
+              <label key={widget.id} className="flex items-center justify-between gap-4 cursor-pointer">
+                <span className="text-sm">{widget.label}</span>
+                <input
+                  type="checkbox"
+                  checked={widget.visible}
+                  onChange={(event) => setVisible(widget.id, event.target.checked)}
+                  aria-label={`Show ${widget.label} card`}
+                  className="h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500"
+                />
+              </label>
+            ))}
           </div>
         </section>
 
@@ -86,7 +146,17 @@ export default function SettingsContent() {
         <section className="mb-8">
           <h2 className="text-lg font-medium mb-3">{t("settings.wallet.title")}</h2>
           <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-900">
-            <p className="text-sm text-zinc-500">{t("settings.wallet.no_wallet")}</p>
+            {walletAddress ? (
+              <div>
+                <p className="mb-2 font-mono text-xs text-zinc-500">{walletAddress}</p>
+                <label htmlFor="wallet-nickname" className="mb-1 block text-sm">Personal wallet nickname</label>
+                <div className="flex gap-2">
+                  <input id="wallet-nickname" value={walletNickname} maxLength={64} onChange={(event) => setWalletNickname(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-transparent px-3 py-2 text-sm dark:border-zinc-700" placeholder="e.g. Treasury wallet" />
+                  <button type="button" onClick={() => void saveWalletNickname()} className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white">Save</button>
+                </div>
+                {nicknameStatus && <p role="status" className="mt-2 text-xs text-zinc-500">{nicknameStatus}</p>}
+              </div>
+            ) : <p className="text-sm text-zinc-500">{t("settings.wallet.no_wallet")}</p>}
             <button className="mt-3 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors">
               {t("settings.wallet.connect")}
             </button>
@@ -149,6 +219,11 @@ export default function SettingsContent() {
               </div>
             )}
           </div>
+        </section>
+
+        {/* Share Price Alerts (Issue #908) */}
+        <section className="mb-8">
+          <SharePriceAlertPanel />
         </section>
 
         {/* Security */}

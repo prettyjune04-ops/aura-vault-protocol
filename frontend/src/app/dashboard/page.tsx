@@ -1,9 +1,8 @@
 "use client";
 
-import { SortableDashboardGrid } from "@/components/dashboard/SortableDashboardGrid";
-import PerformanceCharts from "@/components/PerformanceCharts";
 import ApyCalculator from "@/components/ApyCalculator";
 import dynamic from "next/dynamic";
+import CollapsibleSection from "@/components/CollapsibleSection";
 
 /**
  * /dashboard — main vault overview page.
@@ -40,8 +39,12 @@ const PerformanceCharts = dynamic(
 export default function DashboardPage() {
   return (
     <div className="space-y-8">
-      <DashboardGrid />
-      <PerformanceCharts />
+      <CollapsibleSection id="vault-stats" title="Vault Stats">
+        <DashboardGrid />
+      </CollapsibleSection>
+      <CollapsibleSection id="apy-chart" title="APY Chart">
+        <PerformanceCharts />
+      </CollapsibleSection>
 
       {/* APY Calculator — issue #261 */}
       <div className="mx-auto w-full max-w-4xl px-4 pb-8">

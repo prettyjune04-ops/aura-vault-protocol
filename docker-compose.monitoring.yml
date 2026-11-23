@@ -47,6 +47,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./monitoring/loki/loki-config.yml:/etc/loki/local-config.yaml
+      - ./monitoring/loki/rules.yaml:/loki/rules/fake/aura-alerts.yaml:ro
       - loki_data:/loki
     ports:
       - "3100:3100"
@@ -85,6 +86,22 @@ services:
     networks:
       - monitoring
 
+  # OTLP trace storage for Grafana trace views and latency analysis.
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: aura-tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ./monitoring/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"
+      - "4319:4317"
+      - "4320:4318"
+    networks:
+      - monitoring
+
   # ── Alerting ────────────────────────────────────────────────────────
   alertmanager:
     image: prom/alertmanager:v0.27.0
@@ -92,8 +109,14 @@ services:
     restart: unless-stopped
     volumes:
       - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    environment:
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:?Set SLACK_WEBHOOK_URL before starting Alertmanager}
+      PAGERDUTY_ROUTING_KEY: ${PAGERDUTY_ROUTING_KEY:?Set PAGERDUTY_ROUTING_KEY before starting Alertmanager}
     ports:
       - "9093:9093"
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--config.expand-env"
     networks:
       - monitoring
 
@@ -101,7 +124,9 @@ volumes:
   prometheus_data:
   grafana_data:
   loki_data:
+  tempo_data:
 
 networks:
   monitoring:
+    name: aura-network
     driver: bridge

@@ -59,6 +59,8 @@ export interface PreSignBreakdownProps {
   sharePrice?: string;
   /** Protocol fee rate as a decimal (e.g. 0.001 = 0.1%). */
   protocolFeeRate?: number;
+  /** Estimated transaction time label (default "5–7 seconds"). */
+  estimatedTimeSec?: string;
   /** Called when user clicks Cancel / Back. */
   onCancel: () => void;
   /** Called when user clicks Confirm / Proceed. */
@@ -71,19 +73,11 @@ export interface PreSignBreakdownProps {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 const FEE_STATS_URL = `${API_BASE}/api/v1/stellar/fee-stats`;
-
-/** XLM spot price used to convert fees to USD (stub — replace with live feed). */
-const XLM_USD_PRICE = 0.12;
+const GAS_ESTIMATE_URL = `${API_BASE}/api/v1/gas/estimate`;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function xlmToUsd(xlm: string): string {
-  const n = parseFloat(xlm);
-  if (!Number.isFinite(n)) return "$0.000000";
-  return `$${(n * XLM_USD_PRICE).toFixed(6)}`;
-}
 
 function formatAmount(raw: string, decimals = 4): string {
   const n = parseFloat(raw);
@@ -203,20 +197,58 @@ export default function PreSignBreakdown({
   amount,
   sharePrice = "1.0",
   protocolFeeRate = 0,
+  estimatedTimeSec = "5–7",
   onCancel,
   onProceed,
 }: PreSignBreakdownProps) {
   const [feeStats, setFeeStats] = useState<StellarFeeStats | null>(null);
   const [feeLoading, setFeeLoading] = useState(true);
   const [feeError, setFeeError] = useState(false);
+  const [xlmUsdPrice, setXlmUsdPrice] = useState<number | null>(null);
 
-  // Fetch fee stats from backend
+  // Fetch fee stats from backend — try /api/v1/gas/estimate first (#885), then
+  // fall back to /api/v1/stellar/fee-stats for the full Stellar fee stats shape.
   useEffect(() => {
     let cancelled = false;
     setFeeLoading(true);
     setFeeError(false);
 
     (async () => {
+      try {
+        // Primary: /api/v1/gas/estimate (returns baseFee in stroops + XLM)
+        const gasRes = await fetch(GAS_ESTIMATE_URL);
+        if (gasRes.ok) {
+          const gasJson = await gasRes.json();
+          const gasData = gasJson.data ?? gasJson;
+          // Normalize to StellarFeeStats shape so the existing Row components work
+          const baseFeeStroops: number =
+            gasData.baseFeeStroops ?? gasData.baseFee ?? 100;
+          const baseFeeXlm: string =
+            gasData.xlm ?? (baseFeeStroops / 10_000_000).toFixed(7);
+          if (!cancelled) {
+            setFeeStats({
+              lastLedger: gasData.lastLedger ?? 0,
+              lastLedgerBaseFee: baseFeeStroops,
+              ledgerCapacityUsage: gasData.ledgerCapacityUsage ?? 0,
+              congested: gasData.congested ?? false,
+              fee: {
+                base: { stroops: baseFeeStroops, xlm: baseFeeXlm },
+                low: { stroops: baseFeeStroops, xlm: baseFeeXlm },
+                standard: { stroops: baseFeeStroops, xlm: baseFeeXlm },
+                high: { stroops: baseFeeStroops * 2, xlm: (baseFeeStroops * 2 / 10_000_000).toFixed(7) },
+              },
+              fetchedAt: new Date().toISOString(),
+              cached: gasData.cached ?? false,
+            });
+          }
+          if (!cancelled) setFeeLoading(false);
+          return;
+        }
+      } catch {
+        // fall through to stellar fee-stats
+      }
+
+      // Fallback: /api/v1/stellar/fee-stats
       try {
         const res = await fetch(FEE_STATS_URL);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -234,6 +266,25 @@ export default function PreSignBreakdown({
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const refreshPrice = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/v1/gas/usd-price?asset=XLM`, { cache: "no-store" });
+        if (!response.ok) throw new Error("Price unavailable");
+        const body = await response.json();
+        const price = Number(body.data?.priceUSD);
+        if (!Number.isFinite(price) || price <= 0) throw new Error("Invalid price");
+        if (!cancelled) setXlmUsdPrice(price);
+      } catch {
+        if (!cancelled) setXlmUsdPrice(null);
+      }
+    };
+    void refreshPrice();
+    const timer = window.setInterval(() => void refreshPrice(), 60_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
+
   const label = type === "deposit" ? "Deposit" : "Withdrawal";
   const outputLabel = type === "deposit" ? "Shares received" : "XLM redeemed";
   const outputUnit = type === "deposit" ? "AVS" : "XLM";
@@ -242,7 +293,7 @@ export default function PreSignBreakdown({
   const expectedOutput = computeExpectedOutput(type, amount, sharePrice, protocolFeeRate);
 
   const stdFeeXlm = feeStats?.fee.standard.xlm ?? null;
-  const stdFeeUsd = stdFeeXlm ? xlmToUsd(stdFeeXlm) : null;
+  const stdFeeUsd = stdFeeXlm && xlmUsdPrice !== null ? `~$${(Number(stdFeeXlm) * xlmUsdPrice).toFixed(6)}` : null;
 
   return (
     <div data-cy="pre-sign-breakdown" className="flex flex-col gap-4">
@@ -284,10 +335,19 @@ export default function PreSignBreakdown({
         <Row
           label="Stellar network fee"
           value={stdFeeXlm ? `${stdFeeXlm} XLM` : feeError ? "~0.0000100 XLM" : undefined}
-          sub={stdFeeUsd ? `≈ ${stdFeeUsd}` : feeError ? "≈ $0.0000012" : undefined}
+          sub={stdFeeUsd ?? "USD price unavailable"}
           loading={feeLoading && !feeError}
           bold
           testId="breakdown-network-fee"
+        />
+
+        <div className="border-t border-zinc-200 dark:border-zinc-700 my-1" />
+
+        {/* Estimated confirmation time (#885) */}
+        <Row
+          label="Estimated time"
+          value={`~${estimatedTimeSec} seconds`}
+          testId="breakdown-estimated-time"
         />
       </dl>
 
@@ -340,7 +400,7 @@ export default function PreSignBreakdown({
               Loading…
             </span>
           ) : (
-            "Proceed to sign"
+            "Confirm & Sign"
           )}
         </button>
       </div>

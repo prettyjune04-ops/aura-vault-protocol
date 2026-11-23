@@ -50,6 +50,18 @@ body {
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
+/* A consistent keyboard indicator remains visible even when components use
+   reset utilities such as outline-none. Blue contrasts against light and
+   dark surfaces and is applied only for keyboard focus. */
+:where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 3px solid #2563eb !important;
+  outline-offset: 2px;
+}
+
+.dark :where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline-color: #60a5fa !important;
+}
+
 /* ── Page transitions ── */
 @keyframes fade-in {
   from { opacity: 0; transform: translateY(8px); }
@@ -114,6 +126,17 @@ body {
 @keyframes bounce-subtle {
   0%, 100% { transform: translateY(0); }
   50%      { transform: translateY(-4px); }
+}
+
+@keyframes value-change {
+  from { opacity: 0.45; transform: translateY(0.18em); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes success-check {
+  0% { opacity: 0; transform: scale(0.65); }
+  70% { opacity: 1; transform: scale(1.12); }
+  100% { opacity: 1; transform: scale(1); }
 }
 
 /* ── Swipe animations for mobile ── */
@@ -181,22 +204,25 @@ body {
 }
 
 /* ── Utility classes ── */
-.animate-fade-in        { animation: fade-in        350ms cubic-bezier(0.4, 0, 0.2, 1) both; }
-.animate-fade-out       { animation: fade-out       300ms cubic-bezier(0.4, 0, 0.2, 1) both; }
-.animate-slide-in-right { animation: slide-in-right 350ms cubic-bezier(0.4, 0, 0.2, 1) both; }
-.animate-slide-in-left  { animation: slide-in-left  350ms cubic-bezier(0.4, 0, 0.2, 1) both; }
-.animate-toast-in       { animation: toast-in       350ms cubic-bezier(0.4, 0, 0.2, 1) both; }
-.animate-toast-out      { animation: toast-out      300ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+.animate-fade-in        { animation: fade-in        280ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+.animate-fade-out       { animation: fade-out       180ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+.animate-slide-in-right { animation: slide-in-right 280ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+.animate-slide-in-left  { animation: slide-in-left  280ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+.animate-toast-in       { animation: toast-in       280ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+.animate-toast-out      { animation: toast-out      180ms cubic-bezier(0.4, 0, 0.2, 1) both; }
 .animate-modal-backdrop { animation: modal-backdrop-in 200ms ease both; }
-.animate-modal-content  { animation: modal-content-in  300ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+.animate-modal-content  { animation: modal-content-in  280ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+.animate-value-change  { animation: value-change 240ms ease-out both; }
+.animate-success-check { animation: success-check 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.page-transition       { animation: fade-in 280ms cubic-bezier(0.4, 0, 0.2, 1) both; }
 .animate-spin           { animation: spin           600ms linear infinite; }
 .animate-pulse-subtle   { animation: pulse-subtle   1.5s  ease-in-out infinite; }
 .animate-bounce-subtle  { animation: bounce-subtle  1.2s  ease-in-out infinite; }
 .animate-swipe-up       { animation: swipe-up       400ms cubic-bezier(0.4, 0, 0.2, 1) both; }
 .animate-swipe-down     { animation: swipe-down     400ms cubic-bezier(0.4, 0, 0.2, 1) both; }
 /* Bottom-sheet entry/exit — Issue #259 */
-.animate-sheet-in       { animation: sheet-in       380ms cubic-bezier(0.32, 0.72, 0, 1) both; }
-.animate-sheet-out      { animation: sheet-out      320ms cubic-bezier(0.32, 0.72, 0, 1) both; }
+.animate-sheet-in       { animation: sheet-in       280ms cubic-bezier(0.32, 0.72, 0, 1) both; }
+.animate-sheet-out      { animation: sheet-out      180ms cubic-bezier(0.32, 0.72, 0, 1) both; }
 .animate-press-down     { animation: press-down     150ms cubic-bezier(0.4, 0, 0.2, 1) both; }
 .animate-press-up       { animation: press-up       150ms cubic-bezier(0.4, 0, 0.2, 1) both; }
 
@@ -265,6 +291,11 @@ body {
 }
 
 /* ── Respect prefers-reduced-motion ── */
+@keyframes leaderboard-enter {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -275,3 +306,17 @@ body {
     scroll-behavior: auto !important;
   }
 }
+html {
+  font-size: calc(16px * var(--user-font-scale, 1));
+}
+
+html[data-compact="true"] .p-4 { padding: .75rem; }
+html[data-compact="true"] .px-4 { padding-left: .75rem; padding-right: .75rem; }
+html[data-compact="true"] .py-4 { padding-top: .75rem; padding-bottom: .75rem; }
+html[data-compact="true"] .gap-4 { gap: .75rem; }
+html[data-compact="true"] .mb-4 { margin-bottom: .75rem; }
+html[data-compact="true"] .space-y-4 > :not([hidden]) ~ :not([hidden]) { margin-top: .75rem; }
+
+html[style*="--user-accent"] .bg-indigo-600 { background-color: var(--user-accent) !important; color: var(--user-accent-foreground) !important; }
+html[style*="--user-accent"] .hover\:bg-indigo-700:hover { background-color: color-mix(in srgb, var(--user-accent), var(--user-accent-foreground) 12%) !important; }
+html[style*="--user-accent"] .border-indigo-600 { border-color: var(--user-accent) !important; }

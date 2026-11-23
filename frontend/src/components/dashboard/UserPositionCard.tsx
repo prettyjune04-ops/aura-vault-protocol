@@ -1,9 +1,13 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { DashboardCard } from "./DashboardCard";
 import { ShareBalanceDisplay } from "@/components/ShareBalanceDisplay";
 import { ExplorerMenu } from "@/components/ExplorerMenu";
+import HelpTooltip from "@/components/HelpTooltip";
+import { WalletAliasDisplay } from "@/components/WalletAliasDisplay";
+import { useContractEvents } from "@/lib/useContractEvents";
+import { estimateYieldPerSecond } from "@/lib/yieldAccrual";
 
 export interface UserPosition {
   /** Underlying token balance redeemable by this user */
@@ -16,6 +20,9 @@ export interface UserPosition {
   address: string;
   /** Unix timestamp (ms) when share price was last fetched */
   sharePriceUpdatedAt?: number;
+  /** Current annualised APY as a decimal (for example, 0.08 for 8%). */
+  apy7d?: number | null;
+  lastHarvestAt?: string | number | null;
 }
 
 export interface UserPositionCardProps {
@@ -33,7 +40,7 @@ function Skeleton({ className }: { className?: string }) {
   );
 }
 
-function Row({ label, value, testId }: { label: string; value: React.ReactNode; testId?: string }) {
+function Row({ label, value, testId }: { label: React.ReactNode; value: React.ReactNode; testId?: string }) {
   return (
     <div className="flex items-baseline justify-between gap-4">
       <dt className="text-[length:var(--text-sm)] text-[var(--color-text-muted)] shrink-0">{label}</dt>
@@ -55,6 +62,51 @@ function Row({ label, value, testId }: { label: string; value: React.ReactNode; 
  * disconnected visitors.
  */
 export function UserPositionCard({ position, isLoading }: UserPositionCardProps) {
+  const [accrued, setAccrued] = useState(0);
+  const { lastEvent } = useContractEvents({ walletAddress: position?.address });
+  const positionValue = useMemo(() => {
+    const value = Number(position?.underlyingBalance.replace(/[^\d.-]/g, ""));
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  }, [position?.underlyingBalance]);
+  const apy = position?.apy7d;
+  const perSecond = estimateYieldPerSecond(position?.underlyingBalance ?? "0", apy);
+
+  useEffect(() => {
+    if (lastEvent?.type === "harvest") setAccrued(0);
+  }, [lastEvent]);
+
+  useEffect(() => {
+    if (!position?.lastHarvestAt) {
+      setAccrued(0);
+      return;
+    }
+    const harvestedAt = typeof position.lastHarvestAt === "number"
+      ? position.lastHarvestAt
+      : new Date(position.lastHarvestAt).getTime();
+    if (Number.isFinite(harvestedAt)) {
+      setAccrued(Math.max(0, Date.now() - harvestedAt) / 1000 * perSecond);
+    }
+  }, [position?.lastHarvestAt, perSecond]);
+
+  useEffect(() => {
+    if (!position || perSecond <= 0) return;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const updateTimer = () => {
+      if (document.visibilityState === "visible") {
+        if (!timer) timer = window.setInterval(() => setAccrued((amount) => amount + perSecond), 1000);
+      } else if (timer) {
+        window.clearInterval(timer);
+        timer = undefined;
+      }
+    };
+    updateTimer();
+    document.addEventListener("visibilitychange", updateTimer);
+    return () => {
+      document.removeEventListener("visibilitychange", updateTimer);
+      if (timer) window.clearInterval(timer);
+    };
+  }, [position, perSecond]);
+
   // Wallet not connected — render nothing (satisfies AC: card only visible when connected)
   if (!isLoading && !position) return null;
 
@@ -64,11 +116,10 @@ export function UserPositionCard({ position, isLoading }: UserPositionCardProps)
       title="Your Position"
       subtitle={
         position?.address ? (
-          <ExplorerMenu
-            value={position.address}
-            type="account"
-            className="text-[length:var(--text-sm)] text-[var(--color-text-muted)]"
-          />
+          <span className="inline-flex items-center gap-2">
+            <WalletAliasDisplay address={position.address} />
+            <ExplorerMenu value={position.address} type="account" className="text-[length:var(--text-sm)] text-[var(--color-text-muted)]" />
+          </span>
         ) : undefined
       }
       data-testid="user-position-card"
@@ -89,7 +140,7 @@ export function UserPositionCard({ position, isLoading }: UserPositionCardProps)
           />
           <hr className="border-[var(--color-border)]" />
           <Row
-            label="Vault shares held"
+            label={<span className="inline-flex items-center gap-1">Vault shares held<HelpTooltip helpKey="vaultShares" side="left" /></span>}
             value={
               <ShareBalanceDisplay
                 shares={position!.shares}
@@ -101,10 +152,15 @@ export function UserPositionCard({ position, isLoading }: UserPositionCardProps)
             testId="position-shares"
           />
           <Row
-            label="At share price"
+            label={<span className="inline-flex items-center gap-1">At share price<HelpTooltip helpKey="exchangeRate" side="left" /></span>}
             value={position!.sharePrice}
             testId="position-share-price"
           />
+          {positionValue > 0 && typeof apy === "number" && Number.isFinite(apy) && apy >= 0 && (
+            <p className="text-xs text-[var(--color-text-muted)]" aria-live="off" data-testid="yield-accrual-counter">
+              Estimated yield: +{accrued.toFixed(6)} USDC accrued ({perSecond.toFixed(6)} USDC/sec at current APY)
+            </p>
+          )}
         </dl>
       )}
     </DashboardCard>
